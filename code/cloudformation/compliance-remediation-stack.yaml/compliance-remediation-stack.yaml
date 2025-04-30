@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AWS Compliance-as-Code Lab Stack: Deploy AWS Config rule, EventBridge rule,
+  and Lambda function for auto-remediation of S3 bucket misconfigurations.
+
+Parameters:
+  ConfigBucketName:
+    Type: String
+    Description: Name of the S3 bucket to deliver AWS Config logs to.
+  RemediationFunctionName:
+    Type: String
+    Default: AutoRemediateFunction
+    Description: Name of the Lambda function used for remediation
+
+Resources:
+
+  ConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AWSConfigPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                Resource: !Sub arn:aws:s3:::${ConfigBucketName}/*
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                  - config:Put*
+                  - config:Get*
+                Resource: '*'
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      Name: default
+      RoleARN: !GetAtt ConfigRole.Arn
+      RecordingGroup:
+        AllSupported: true
+        IncludeGlobalResourceTypes: true
+
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Properties:
+      S3BucketName: !Ref ConfigBucketName
+    DependsOn: ConfigRecorder
+
+  S3BucketPublicReadProhibitedRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: s3-bucket-public-read-prohibited
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_PUBLIC_READ_PROHIBITED
+
+  RemediationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref RemediationFunctionName
+      Handler: index.handler
+      Runtime: python3.12
+      Role: !GetAtt RemediationFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              print("Received event:", json.dumps(event))
+
+              detail = event.get("detail", {})
+              resource_id = detail.get("resourceId")
+              compliance_type = detail.get("newEvaluationResult", {}).get("complianceType")
+
+              if not resource_id or compliance_type != "NON_COMPLIANT":
+                  print("No actionable resource or not NON_COMPLIANT.")
+                  return
+
+              bucket_name = resource_id.split("/")[-1]
+              try:
+                  s3.put_bucket_acl(
+                      Bucket=bucket_name,
+                      ACL='private'
+                  )
+                  print(f"Remediation applied: Bucket {bucket_name} ACL set to private.")
+              except Exception as e:
+                  print(f"Failed to remediate bucket {bucket_name}: {str(e)}")
+
+  RemediationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RemediationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketAcl
+                  - s3:GetBucketAcl
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  ConfigComplianceEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ConfigComplianceChangeRule
+      Description: Trigger Lambda on Config compliance state changes
+      EventPattern:
+        source:
+          - aws.config
+        detail-type:
+          - Config Rules Compliance Change
+        detail:
+          messageType:
+            - ComplianceChangeNotification
+      Targets:
+        - Arn: !GetAtt RemediationFunction.Arn
+          Id: TargetLambda
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RemediationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ConfigComplianceEventRule.Arn
+
+Outputs:
+  ConfigRuleName:
+    Description: Name of AWS Config rule
+    Value: !Ref S3BucketPublicReadProhibitedRule
+
+  LambdaFunction:
+    Description: Auto-remediation Lambda function
+    Value: !Ref RemediationFunction
+
+  EventBridgeRule:
+    Description: EventBridge rule name
+    Value: !Ref ConfigComplianceEventRule
