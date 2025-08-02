@@ -10,7 +10,7 @@
 
 ## 🧠 Overview
 
-**Imagine your organization just onboarded 12 new AWS accounts under a multi-account structure.** You're tasked with ensuring every environment continuously enforces compliance baselines—such as no publicly accessible S3 buckets, secure security group configurations, and no disabled CloudTrail logs. Manually tracking and remediating these issues isn't scalable.
+**Imagine your organization just onboarded 12 new AWS accounts under a multi-account structure.** You're tasked with ensuring every environment continuously enforces compliance baselines such as no publicly accessible S3 buckets, secure security group configurations, and no disabled CloudTrail logs. Manually tracking and remediating these issues isn't scalable.
 
 This lab simulates a real-world scenario where your GRC/security team codifies compliance guardrails using AWS Config and EventBridge, then automatically remediates violations using AWS Lambda. This is a foundational step toward achieving "compliance as code" across cloud environments.
 
